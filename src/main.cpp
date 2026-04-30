@@ -1,52 +1,74 @@
 /*
- * Step 2: TDOA Left/Right Direction Test (v2)
- * Fixed: higher threshold, longer cooldown, better noise handling
+ * 4-Mic TDOA + Motor + LED Alert System
+ * Board: Xiao ESP32-S3
+ * 
+ * I2S0 (front pair):
+ *   SCK → GPIO7 (D8), WS → GPIO8 (D9), SD → GPIO9 (D10)
+ *   Mic1 L/R → GND (front left), Mic2 L/R → 3.3V (front right)
+ *
+ * I2S1 (rear pair):
+ *   SCK → GPIO1 (D0), WS → GPIO2 (D1), SD → GPIO3 (D2)
+ *   Mic3 L/R → GND (rear left), Mic4 L/R → 3.3V (rear right)
+ *
+ * Motor (via S8050 NPN + 1kΩ + 1N4148):
+ *   Left motor  → GPIO4 (D3)
+ *   Right motor → GPIO6 (D5)
+ *
+ * NeoPixel LED:
+ *   DIN → GPIO5 (D4), VDD → 3.3V, GND → GND
  */
 
 #include <Arduino.h>
 #include <driver/i2s.h>
+#include <Adafruit_NeoPixel.h>
 
-// ----- Pin Definitions -----
-#define I2S_SCK   7
-#define I2S_WS    8
-#define I2S_SD    9
+// ----- I2S0 Pins (front pair) -----
+#define I2S0_SCK  7
+#define I2S0_WS   8
+#define I2S0_SD   9
+
+// ----- I2S1 Pins (rear pair) -----
+#define I2S1_SCK  1
+#define I2S1_WS   2
+#define I2S1_SD   3
+
+// ----- Motor Pins -----
+#define MTR_LEFT  4   // GPIO4 (D3)
+#define MTR_RIGHT 6   // GPIO6 (D5)
+
+// ----- NeoPixel LED -----
+#define LED_PIN   5   // GPIO5 (D4)
+#define LED_COUNT 1
+Adafruit_NeoPixel led(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
 
 // ----- Audio Settings -----
-#define SAMPLE_RATE   44100
-#define I2S_PORT      I2S_NUM_0
-#define BUFFER_LEN    512
-
-// ----- TDOA Settings -----
-#define CAPTURE_SAMPLES  2048
-#define MAX_DELAY        20          // tighter: 15.5cm max is ~20 samples
-#define CLAP_THRESHOLD   30000       // raised: only triggers on loud claps
-#define COOLDOWN_MS      3000        // 3 seconds between detections
-#define MIC_DISTANCE_CM  15.5
-#define SOUND_SPEED_CM   34300.0
+#define SAMPLE_RATE     44100
+#define BUFFER_LEN      512
+#define CAPTURE_SAMPLES 2000
+#define MAX_DELAY       20
+#define CLAP_THRESHOLD  20000
+#define COOLDOWN_MS     1500
+#define ALERT_DURATION  1000  // motor vibrate + LED on for 1 second
 
 // ----- Buffers -----
-int32_t raw_samples[BUFFER_LEN];
-int32_t left_buf[CAPTURE_SAMPLES];
-int32_t right_buf[CAPTURE_SAMPLES];
+int32_t raw_i2s0[BUFFER_LEN];
+int32_t raw_i2s1[BUFFER_LEN];
+
+int32_t front_left[CAPTURE_SAMPLES];
+int32_t front_right[CAPTURE_SAMPLES];
+int32_t rear_left[CAPTURE_SAMPLES];
+int32_t rear_right[CAPTURE_SAMPLES];
 
 int capture_index = 0;
 bool capturing = false;
 bool ready_to_analyze = false;
 int trial_number = 0;
 unsigned long last_trigger_time = 0;
+unsigned long alert_start_time = 0;
+bool alerting = false;
 
-void setup() {
-  Serial.begin(115200);
-  delay(2000);
-  
-  Serial.println("==========================================");
-  Serial.println("  TDOA Left/Right Direction Test v2");
-  Serial.println("  Mic spacing: 15.5cm");
-  Serial.println("  Threshold: 30000 (loud clap only)");
-  Serial.println("  Cooldown: 3 seconds");
-  Serial.println("==========================================");
-
-  i2s_config_t i2s_config = {
+void setup_i2s(i2s_port_t port, int sck, int ws, int sd) {
+  i2s_config_t config = {
     .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
     .sample_rate = SAMPLE_RATE,
     .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
@@ -60,38 +82,59 @@ void setup() {
     .fixed_mclk = 0
   };
 
-  i2s_pin_config_t pin_config = {
-    .bck_io_num   = I2S_SCK,
-    .ws_io_num    = I2S_WS,
+  i2s_pin_config_t pins = {
+    .bck_io_num   = sck,
+    .ws_io_num    = ws,
     .data_out_num = I2S_PIN_NO_CHANGE,
-    .data_in_num  = I2S_SD
+    .data_in_num  = sd
   };
 
-  i2s_driver_install(I2S_PORT, &i2s_config, 0, NULL);
-  i2s_set_pin(I2S_PORT, &pin_config);
-  i2s_zero_dma_buffer(I2S_PORT);
+  i2s_driver_install(port, &config, 0, NULL);
+  i2s_set_pin(port, &pins);
+  i2s_zero_dma_buffer(port);
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(2000);
+
+  // Setup motors
+  pinMode(MTR_LEFT, OUTPUT);
+  pinMode(MTR_RIGHT, OUTPUT);
+  digitalWrite(MTR_LEFT, LOW);
+  digitalWrite(MTR_RIGHT, LOW);
+
+  // Setup NeoPixel
+  led.begin();
+  led.clear();
+  led.show();
+
+  // Setup I2S
+  setup_i2s(I2S_NUM_0, I2S0_SCK, I2S0_WS, I2S0_SD);
+  setup_i2s(I2S_NUM_1, I2S1_SCK, I2S1_WS, I2S1_SD);
+
   delay(500);
 
-  Serial.println("Ready! Clap LOUDLY to test direction.");
+  Serial.println("==========================================");
+  Serial.println("  4-Mic TDOA + Motor + LED Alert");
+  Serial.println("  Left motor:  GPIO4 (D3)");
+  Serial.println("  Right motor: GPIO6 (D5)");
+  Serial.println("  NeoPixel:    GPIO5 (D4)");
+  Serial.println("==========================================");
+  Serial.println("Ready! Clap to test direction + alert.");
   Serial.println("------------------------------------------");
 }
 
-// Remove DC offset before correlation
 void remove_dc(int32_t* buf, int len) {
   int64_t sum = 0;
-  for (int i = 0; i < len; i++) {
-    sum += buf[i];
-  }
+  for (int i = 0; i < len; i++) sum += buf[i];
   int32_t dc = sum / len;
-  for (int i = 0; i < len; i++) {
-    buf[i] -= dc;
-  }
+  for (int i = 0; i < len; i++) buf[i] -= dc;
 }
 
-int compute_tdoa() {
-  // Remove DC offset from both channels
-  remove_dc(left_buf, CAPTURE_SAMPLES);
-  remove_dc(right_buf, CAPTURE_SAMPLES);
+int compute_tdoa(int32_t* buf_a, int32_t* buf_b) {
+  remove_dc(buf_a, CAPTURE_SAMPLES);
+  remove_dc(buf_b, CAPTURE_SAMPLES);
 
   float max_corr = 0;
   int best_delay = 0;
@@ -99,77 +142,152 @@ int compute_tdoa() {
   for (int d = -MAX_DELAY; d <= MAX_DELAY; d++) {
     float corr = 0;
     int count = 0;
-
     for (int i = 0; i < CAPTURE_SAMPLES; i++) {
       int j = i + d;
       if (j >= 0 && j < CAPTURE_SAMPLES) {
-        corr += (float)left_buf[i] * (float)right_buf[j];
+        corr += (float)buf_a[i] * (float)buf_b[j];
         count++;
       }
     }
-
-    if (count > 0) {
-      corr /= count;
-    }
-
+    if (count > 0) corr /= count;
     if (corr > max_corr) {
       max_corr = corr;
       best_delay = d;
     }
   }
-
   return best_delay;
 }
 
-void analyze_direction() {
-  int delay_samples = compute_tdoa();
-  
-  float delay_us = (float)delay_samples / SAMPLE_RATE * 1000000.0;
-
-  const char* direction;
-  if (delay_samples > 3) {
-      direction = ">>> BACK";
-  } else if (delay_samples < -3) {
-      direction = "<<< FRONT";
+void trigger_alert(const char* lr_dir, const char* fr_dir) {
+  // LED color based on left/right direction
+  if (strcmp(lr_dir, "LEFT") == 0) {
+    led.setPixelColor(0, led.Color(0, 0, 255));    // Blue = left
+    Serial.println("  [LED] Blue (left)");
+  } else if (strcmp(lr_dir, "RIGHT") == 0) {
+    led.setPixelColor(0, led.Color(0, 255, 0));    // Green = right
+    Serial.println("  [LED] Green (right)");
   } else {
-      direction = "=== CENTER";
+    led.setPixelColor(0, led.Color(255, 255, 255)); // White = center
+    Serial.println("  [LED] White (center)");
+  }
+  led.show();
+
+  // Motor only vibrates for BACK sounds
+  if (strcmp(fr_dir, "BACK") == 0) {
+    if (strcmp(lr_dir, "LEFT") == 0) {
+      digitalWrite(MTR_LEFT, HIGH);
+      digitalWrite(MTR_RIGHT, LOW);
+      Serial.println("  [MOTOR] Left vibrate (back-left)");
+    } else if (strcmp(lr_dir, "RIGHT") == 0) {
+      digitalWrite(MTR_LEFT, LOW);
+      digitalWrite(MTR_RIGHT, HIGH);
+      Serial.println("  [MOTOR] Right vibrate (back-right)");
+    } else {
+      digitalWrite(MTR_LEFT, HIGH);
+      digitalWrite(MTR_RIGHT, HIGH);
+      Serial.println("  [MOTOR] Both vibrate (back-center)");
+    }
+  } else {
+    digitalWrite(MTR_LEFT, LOW);
+    digitalWrite(MTR_RIGHT, LOW);
+    Serial.println("  [MOTOR] Off (front/middle)");
   }
 
+  alerting = true;
+  alert_start_time = millis();
+} 
+
+
+void stop_alert() {
+  digitalWrite(MTR_LEFT, LOW);
+  digitalWrite(MTR_RIGHT, LOW);
+  led.clear();
+  led.show();
+  alerting = false;
+}
+
+void analyze_direction() {
+  int lr_delay = compute_tdoa(front_left, front_right);
+  float lr_us = (float)lr_delay / SAMPLE_RATE * 1000000.0;
+
+  int fr_delay = compute_tdoa(front_left, rear_left);
+  float fr_us = (float)fr_delay / SAMPLE_RATE * 1000000.0;
+
+  const char* lr_dir;
+  if (lr_delay > 3) lr_dir = "RIGHT";
+  else if (lr_delay < -3) lr_dir = "LEFT";
+  else lr_dir = "CENTER";
+
+  const char* fr_dir;
+  if (fr_delay > 3) fr_dir = "FRONT";
+  else if (fr_delay < -3) fr_dir = "BACK";
+  else fr_dir = "MIDDLE";
+
   trial_number++;
-  
+
   Serial.println("==========================================");
   Serial.printf("  Trial #%d\n", trial_number);
-  Serial.printf("  Delay: %d samples (%.1f us)\n", delay_samples, delay_us);
-  Serial.printf("  Direction: %s\n", direction);
+  Serial.println("  ---- Left/Right ----");
+  Serial.printf("  Delay: %d samples (%.1f us)\n", lr_delay, lr_us);
+  Serial.printf("  Direction: %s\n", lr_dir);
+  Serial.println("  ---- Front/Back ----");
+  Serial.printf("  Delay: %d samples (%.1f us)\n", fr_delay, fr_us);
+  Serial.printf("  Direction: %s\n", fr_dir);
+  Serial.println("  ---- Combined ----");
+  Serial.printf("  >>> %s - %s <<<\n", fr_dir, lr_dir);
+
+  // Trigger motor + LED alert
+  trigger_alert(lr_dir, fr_dir);
+
   Serial.println("==========================================");
-  Serial.println("Ready for next clap...");
 }
 
 void loop() {
-  size_t bytes_read = 0;
+  // Turn off alert after duration
+  if (alerting && (millis() - alert_start_time > ALERT_DURATION)) {
+    stop_alert();
+    Serial.println("Ready for next clap...");
+  }
 
-  i2s_read(I2S_PORT, raw_samples, sizeof(raw_samples), &bytes_read, portMAX_DELAY);
-  int samples_read = bytes_read / sizeof(int32_t);
+  size_t bytes_read_0 = 0;
+  size_t bytes_read_1 = 0;
 
-  for (int i = 0; i < samples_read; i += 2) {
-    int32_t left  = raw_samples[i] >> 14;
-    int32_t right = raw_samples[i + 1] >> 14;
+  i2s_read(I2S_NUM_0, raw_i2s0, sizeof(raw_i2s0), &bytes_read_0, portMAX_DELAY);
+  i2s_read(I2S_NUM_1, raw_i2s1, sizeof(raw_i2s1), &bytes_read_1, portMAX_DELAY);
 
-    // Check for loud sound, with cooldown
-    if (!capturing && !ready_to_analyze) {
-      if ((abs(left) > CLAP_THRESHOLD || abs(right) > CLAP_THRESHOLD) 
-          && (millis() - last_trigger_time > COOLDOWN_MS)) {
+  int samples_0 = bytes_read_0 / sizeof(int32_t);
+  int samples_1 = bytes_read_1 / sizeof(int32_t);
+
+  for (int i = 0; i < samples_0; i += 2) {
+    // Front pair — swapped to match ESP32 I2S channel mapping
+    int32_t fl = raw_i2s0[i + 1] >> 14;  // front left  (L/R → GND)
+    int32_t fr = raw_i2s0[i] >> 14;      // front right (L/R → 3.3V)
+
+    int32_t rl = 0, rr = 0;
+    if (i < samples_1) {
+      rl = raw_i2s1[i + 1] >> 14;        // rear left   (L/R → GND)
+      rr = raw_i2s1[i] >> 14;            // rear right  (L/R → 3.3V)
+    }
+
+    // Check for loud sound to trigger capture
+    if (!capturing && !ready_to_analyze && !alerting) {
+      if ((abs(fl) > CLAP_THRESHOLD || abs(fr) > CLAP_THRESHOLD ||
+           abs(rl) > CLAP_THRESHOLD || abs(rr) > CLAP_THRESHOLD) &&
+          (millis() - last_trigger_time > COOLDOWN_MS)) {
         capturing = true;
         capture_index = 0;
         last_trigger_time = millis();
-        Serial.println("CLAP detected! Capturing...");
+        Serial.println("CLAP detected! Capturing from all 4 mics...");
       }
     }
 
+    // Capture samples from all 4 mics
     if (capturing) {
       if (capture_index < CAPTURE_SAMPLES) {
-        left_buf[capture_index] = left;
-        right_buf[capture_index] = right;
+        front_left[capture_index] = fl;
+        front_right[capture_index] = fr;
+        rear_left[capture_index] = rl;
+        rear_right[capture_index] = rr;
         capture_index++;
       } else {
         capturing = false;

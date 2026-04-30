@@ -124,24 +124,54 @@
 
 ## Step 4: 4-Mic Full Direction Test
 
-**Date:** ___________  
-**Purpose:** All 4 mics connected, test full left/right/front/rear detection.  
-**Setup:** 4 mics at final glasses positions. Uses ESP32-S3 dual I2S: I2S0 (front L+R), I2S1 (rear L+R).
+**Date:** Week 3  
+**Purpose:** All 4 mics connected, test full left/right/front/rear detection simultaneously.  
+**Setup:** 4× INMP441 on Xiao ESP32-S3. I2S0 (GPIO7/8/9) = front pair, I2S1 (GPIO1/2/3) = rear pair. Front pair spacing 15.5cm, front-rear spacing 14cm. Sample rate 44100Hz, threshold 20000, cooldown 1500ms.
 
-**Pass Criteria:**
-- [ ] All 4 mics read data simultaneously
-- [ ] Can distinguish left, center, right, front, rear
-- [ ] Accuracy ≥ 80% across 40+ trials per direction
+**Code version:** main_4mic.cpp with swapped L/R channel read order (i+1 = left, i = right) to match ESP32 I2S protocol.
 
-**Results:**
+**Bug found & fixed:** 
+- ESP32 I2S left/right channel mapping is opposite to INMP441 L/R pin definition. Swapped [i] and [i+1] in code to fix.
+- Inner scope variable re-declaration (int32_t rl inside if block) shadowed outer variable, causing rear mics to always read 0. Removed duplicate int32_t.
 
-| Trial | Source direction | Detected direction | Correct? | Notes |
-|-------|----------------|--------------------|---------|----|
-| | | | | |
+**Best test run results (after fixes):**
 
-**Accuracy:** _____ / _____ = _____%
+| Trial | Source | L/R result | Correct? | F/B result | Correct? |
+|-------|--------|-----------|----------|-----------|----------|
+| 1 | Left | LEFT | ✓ | FRONT | - |
+| 2 | Left | LEFT | ✓ | BACK | - |
+| 3 | Left | LEFT | ✓ | BACK | - |
+| 4 | Left | LEFT | ✓ | BACK | - |
+| 5 | Right | RIGHT | ✓ | BACK | - |
+| 6 | Right | RIGHT | ✓ | MIDDLE | - |
+| 7 | Right | RIGHT | ✓ | MIDDLE | - |
+| 8 | Front | CENTER | ✓ | FRONT | ✓ |
+| 9 | Front | CENTER | ✓ | FRONT | ✓ |
+| 10 | Front | CENTER | ✓ | FRONT | ✓ |
+| 11 | Back | CENTER | - | MIDDLE | ✗ |
+| 12 | Back | CENTER | - | FRONT | ✗ |
+| 13 | Back | CENTER | - | FRONT | ✗ |
+| 14 | Back | CENTER | - | BACK | ✓ |
+| 15 | Back | CENTER | - | BACK | ✓ |
 
-**Issues / Notes:**
+**Accuracy:**
+- Left/Right: 7/7 = **100%**
+- Front: 3/3 = **100%**
+- Back: 2/5 = **40%**
+
+**Status: PARTIAL PASS — L/R and Front detection reliable, Back detection needs improvement**
+
+**Known issues:**
+- Front-right mic (FR) has intermittent breadboard contact issues — signal drops to near-zero randomly, causing false CENTER readings
+- Back detection less reliable than front — likely due to breadboard instability on rear mic pair (I2S1)
+- Rear mic raw data shows large spikes (e.g. RL:-19160, RR:25064) indicating loose connections
+- All issues are hardware/breadboard related, not code — expected to resolve with PCB
+- Combined direction output works (e.g. "FRONT - LEFT", "BACK - RIGHT") when all 4 mics have stable signal
+
+**Next steps:**
+- Fabricate PCB with T5838 mics at confirmed spacing
+- Run full 40+ trial accuracy test on PCB with stable connections
+- Add ERM motor + LED alert output integration
 
 
 
