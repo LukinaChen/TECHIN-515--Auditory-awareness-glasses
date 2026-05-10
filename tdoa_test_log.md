@@ -179,12 +179,29 @@
 
 ## Summary of Key Findings (for PCB Design)
 
-- **15.5cm left-right spacing: WORKS** — confirmed TDOA can distinguish left/right
-- **14cm front-rear spacing: WORKS** — confirmed TDOA can distinguish front/back
+- **15.5cm left-right spacing: WORKS** — confirmed TDOA can distinguish left/right (100% accuracy)
+- **14cm front-rear spacing: WORKS** — confirmed TDOA can distinguish front/back (front 100%, back 40% on breadboard)
 - **44.1kHz sample rate required** — 16kHz gives too few samples for reliable detection
-- **ESP32-S3 dual I2S plan:** I2S0 for front 2 mics, I2S1 for rear 2 mics
-- **Breadboard instability** causes DC offset and noise — PCB will resolve
+- **ESP32-S3 dual I2S: WORKS** — I2S0 for front 2 mics, I2S1 for rear 2 mics, both running simultaneously
+- **I2S channel swap required** — ESP32 I2S left/right mapping is opposite to INMP441 L/R pin definition; [i+1] = left (L/R→GND), [i] = right (L/R→3.3V)
+- **Front/back direction swap required** — positive delay = FRONT, negative delay = BACK (opposite to initial assumption)
+- **Breadboard instability** causes intermittent signal drops (especially FR mic) and noise — PCB will resolve
 - **Sensitivity and accuracy** are software-tunable, no impact on PCB layout
+- **Alert system verified** — LED responds to direction with color coding (blue=left, green=right, white=center), motors vibrate only for rear sounds, both turn off after 1 second
+
+## GPIO Pin Assignment (confirmed working)
+
+| Function | GPIO | Xiao Pin |
+|----------|------|----------|
+| PDM_CLK0 (front mics) | GPIO7 | D8 |
+| PDM_WS0 (front mics) | GPIO8 | D9 |
+| PDM_SD0 (front mics) | GPIO9 | D10 |
+| PDM_CLK1 (rear mics) | GPIO1 | D0 |
+| PDM_WS1 (rear mics) | GPIO2 | D1 |
+| PDM_SD1 (rear mics) | GPIO3 | D2 |
+| MTR_LEFT | GPIO4 | D3 |
+| LED (NeoPixel DIN) | GPIO5 | D4 |
+| MTR_RIGHT | GPIO6 | D5 |
 
 ---
 
@@ -196,3 +213,144 @@
 | Week 2 | Step 1 completed (partial pass) | I2S comms verified, breadboard contact issues noted |
 | Week 2 | Step 2 preliminary pass | TDOA works at 15.5cm, left/right direction confirmed |
 | Week 2 | Step 3 preliminary pass | TDOA works at 14cm, front/back direction confirmed |
+| Week 3 | Step 4 partial pass | 4-mic dual I2S working, L/R 100%, front 100%, back 40% |
+| Week 3 | Bug fix: I2S channel swap | ESP32 L/R channel mapping opposite to INMP441, swapped [i] and [i+1] |
+| Week 3 | Bug fix: rear mic variable shadowing | int32_t re-declaration inside if block caused rear mics to read 0 |
+| Week 3 | Bug fix: front/back direction swap | Positive delay = FRONT not BACK, swapped labels in code |
+| Week 5 | Motor + LED integration | Added S8050 NPN motor driver circuit, NeoPixel LED, direction-based alert logic |
+| Week 5 | Alert logic: front vs back | Front sounds = LED only, back sounds = LED + motor vibration |
+| Week 5 | LED color coding | Blue = left, green = right, white = center (will map to sound category after YAMNet integration) | 
+
+
+
+# Complete BOM — All Boards (Updated with 8-pin FPC for rear boards)
+
+## PCB2 & PCB3: Rear Boards (same design × 2)
+
+| Ref | Component | Value/Part | Package | Qty per board | Qty total (×2) | Purpose |
+|-----|-----------|-----------|---------|---------------|----------------|---------|
+| J1 | FPC connector | Hirose FH12-8S-0.5SH | 8-pin 0.5mm | 1 | 2 | Connect to main board |
+| MK1 | MEMS mic | MMICT5838-00-012 (T5838) | LGA 3.5×2.65mm | 1 | 2 | Rear audio capture (PDM) |
+| C1 | Capacitor | 100nF (X7R) | 0402 | 1 | 2 | Mic VDD decoupling |
+| C2 | Capacitor | 100nF (X7R) | 0402 | 1 | 2 | Motor EMI filter |
+| FB1 | Ferrite bead | 600Ω @ 100MHz | 0402 | 1 | 2 | Motor noise isolation |
+| Q1 | MOSFET | SI2302 | SOT-23 | 1 | 2 | Motor driver switch |
+| D1 | Diode | 1N4148W | SOD-323 | 1 | 2 | Motor flyback protection |
+| M1 | ERM motor | 10mm coin type | — | 1 | 2 | Haptic vibration alert |
+
+**8-pin FPC definition:**
+1. 3V3
+2. 1V8
+3. GND
+4. CLK1
+5. DAT1
+6. MTR_PWM
+7. WAKE
+8. NC (empty)
+
+**Note:** PCB2 mic SELECT → GND (left channel), PCB3 mic SELECT → 1V8 (right channel)
+
+---
+
+## Main Board
+
+| Ref | Component | Value/Part | Package | Qty | Purpose |
+|-----|-----------|-----------|---------|-----|---------|
+| U1 | MCU module | Xiao ESP32-S3 | SMD module | 1 | Main processor |
+| U2 | 1.8V LDO | XC6206P182MR-G | SOT-23 | 1 | 3.3V → 1.8V for mics |
+| U3 | Level shifter | TXS0108ERKSR | SSOP-20 | 1 | 1.8V ↔ 3.3V signal conversion |
+| C1 | Capacitor | 1μF (X7R) | 0603 | 1 | LDO input cap |
+| C2 | Capacitor | 1μF (X7R) | 0603 | 1 | LDO output cap |
+| C3 | Capacitor | 100nF (X7R) | 0603 | 1 | TXS0108 VA bypass cap (1.8V side) |
+| C4 | Capacitor | 100nF (X7R) | 0603 | 1 | TXS0108 VB bypass cap (3.3V side) |
+| J_PCB1_PWR1 | FPC connector | Hirose FH12-6S-0.5SH | 6-pin 0.5mm | 1 | Connect to PCB1 (power + LED) |
+| J_PCB1_SIG1 | FPC connector | Hirose FH12-6S-0.5SH | 6-pin 0.5mm | 1 | Connect to PCB1 (signal) |
+| J_PCB2 | FPC connector | Hirose FH12-8S-0.5SH | 8-pin 0.5mm | 1 | Connect to PCB2 (rear left) |
+| J_PCB3 | FPC connector | Hirose FH12-8S-0.5SH | 8-pin 0.5mm | 1 | Connect to PCB3 (rear right) |
+| J_BAT1 | Battery connector | JST PH 2-pin | THT | 1 | LiPo battery plug |
+| SW1 | Slide switch | SPDT | SMD or THT | 1 | Power on/off |
+
+**TXS0108 signal mapping (8 channels, using 7):**
+
+| Channel | A side (1.8V) | B side (3.3V) | Direction |
+|---------|--------------|---------------|-----------|
+| A1/B1 | PDM_CLK0 | ESP32 GPIO1 | 3.3V → 1.8V |
+| A2/B2 | PDM_DAT0 | ESP32 GPIO2 | 1.8V → 3.3V |
+| A3/B3 | PDM_CLK1 | ESP32 GPIO3 | 3.3V → 1.8V |
+| A4/B4 | PDM_DAT1 | ESP32 GPIO4 | 1.8V → 3.3V |
+| A5/B5 | THSEL | ESP32 GPIO8 | 3.3V → 1.8V |
+| A6/B6 | WAKE (front) | ESP32 GPIO10 | 1.8V → 3.3V |
+| A7/B7 | WAKE (rear) | ESP32 GPIO | 1.8V → 3.3V |
+| A8/B8 | NC | NC | — |
+
+---
+
+## PCB1: Front Board (Anuj's board — for reference only)
+
+| Ref | Component | Value/Part | Package | Qty | Purpose |
+|-----|-----------|-----------|---------|-----|---------|
+| MK1, MK2 | MEMS mic | MMICT5838-00-012 (T5838) | LGA 3.5×2.65mm | 2 | Front L+R audio capture |
+| U1 | LDO | XC6206P182MR-G | SOT-23 | 1 | 3.3V → 1.8V for front mics |
+| D1-D3 | NeoPixel LED | SK6812-MINI-E | — | 3 | Visual direction alert |
+| D4, D5 | Diode | — | — | 2 | WAKE signal combining |
+| U2, U3 | FPC connector | Hirose FH12 6-pin | 0.5mm | 2 | Connect to main board |
+| C1, C2 | Capacitor | 100nF | 0402 | 2 | Mic decoupling |
+
+---
+
+## Shopping List Summary (all boards combined, excluding PCB1)
+
+| Component | Value/Part | Total Qty Needed | Spares | Order Qty | Est. Price |
+|-----------|-----------|-----------------|--------|-----------|------------|
+| T5838 mic | MMICT5838-00-012 | 2 (rear) | +1 | 3 | $2.32 ea |
+| Xiao ESP32-S3 | SMD | 1 | — | 1 | $7.49 |
+| 1.8V LDO | XC6206P182MR-G | 1 | +1 | 2 | $0.55 ea |
+| Level shifter | TXS0108ERKSR | 1 | +1 | 2 | ~$2 ea |
+| FPC connector 6-pin | FH12-6S-0.5SH | 2 (main→PCB1) | — | 2 | $1.29 ea |
+| FPC connector 8-pin | FH12-8S-0.5SH | 4 (2 on rear boards + 2 on main) | +1 | 5 | ~$1.30 ea |
+| 100nF cap 0402 | X7R | 4 (rear boards) | +6 | 10 | ~$0.01 ea |
+| 100nF cap 0603 | X7R | 2 (main, TXS0108) | +3 | 5 | ~$0.01 ea |
+| 1μF cap 0603 | X7R | 2 (main, LDO) | +3 | 5 | ~$0.01 ea |
+| Ferrite bead 0402 | 600Ω @ 100MHz | 2 | +2 | 4 | ~$0.05 ea |
+| MOSFET | SI2302 SOT-23 | 2 | +2 | 4 | ~$0.30 ea |
+| Diode | 1N4148W SOD-323 | 2 | +2 | 4 | ~$0.05 ea |
+| ERM coin motor | 10mm | 2 | — | 2 | ~$3 ea |
+| JST PH 2-pin | THT | 1 | — | 1 | ~$0.50 |
+| SPDT switch | SMD/THT | 1 | +1 | 2 | ~$0.30 ea |
+| LiPo battery | 500-1000mAh | 1 | — | 1 | ~$8 |
+| FPC cable 6-pin | 0.5mm pitch | 2 (main↔PCB1) | +1 | 3 | ~$1 ea |
+| FPC cable 8-pin | 0.5mm pitch | 2 (main↔PCB2/3) | +1 | 3 | ~$1 ea |
+
+**Estimated total (excluding PCB1 and PCB fab): ~$50-60**
+
+---
+
+## Items already purchased (from budget slide)
+
+| Item | Qty | Status |
+|------|-----|--------|
+| MMICT5838-00-012 | 5 | ✓ Bought |
+| ESP32-S3 | 2 | ✓ Bought |
+| FH12-6S-0.5SH (6-pin) | 6 | ✓ Bought (use 2 for PCB1, 4 spare) |
+| XC6206P182MR-G | 6 | ✓ Bought |
+| INMP441 (testing only) | 4 pack × 2 | ✓ Bought |
+| SPH0645 (testing only) | 2 pack × 2 | ✓ Bought |
+
+## Still need to buy
+
+| Item | Qty | Priority | Notes |
+|------|-----|----------|-------|
+| TXS0108ERKSR | 2 | HIGH | Level shifter — required for mic signals |
+| FH12-8S-0.5SH (8-pin) | 5 | HIGH | Rear board FPC connectors — 6-pin won't work |
+| FPC cable 8-pin 0.5mm | 3 | HIGH | Cables for rear board connections |
+| FPC cable 6-pin 0.5mm | 3 | HIGH | Cables for front board connections |
+| SI2302 MOSFET | 4 | MEDIUM | Motor driver — check if bought |
+| 1N4148W SOD-323 | 4 | MEDIUM | Flyback diode — check if bought |
+| Ferrite bead 600Ω 0402 | 4 | MEDIUM | Motor isolation — check if bought |
+| 100nF caps 0402 | 10 | MEDIUM | Mic + motor decoupling — check if bought |
+| 1μF caps 0603 | 5 | MEDIUM | LDO caps — check if bought |
+| 100nF caps 0603 | 5 | MEDIUM | TXS0108 bypass — check if bought |
+| ERM coin motor 10mm | 2 | MEDIUM | Check if bought |
+| SPDT switch | 2 | LOW | Check if bought |
+| JST PH 2-pin connector | 1 | LOW | Check if bought |
+| LiPo battery 500-1000mAh | 1 | LOW | Check if bought |

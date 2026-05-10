@@ -44,11 +44,11 @@ Adafruit_NeoPixel led(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
 // ----- Audio Settings -----
 #define SAMPLE_RATE     44100
 #define BUFFER_LEN      512
-#define CAPTURE_SAMPLES 2000
+#define CAPTURE_SAMPLES 1200
 #define MAX_DELAY       20
-#define CLAP_THRESHOLD  20000
-#define COOLDOWN_MS     1500
-#define ALERT_DURATION  1000  // motor vibrate + LED on for 1 second
+#define CLAP_THRESHOLD  15000
+#define COOLDOWN_MS     800
+#define ALERT_DURATION  500  // motor vibrate + LED on for 1 second
 
 // ----- Buffers -----
 int32_t raw_i2s0[BUFFER_LEN];
@@ -207,11 +207,18 @@ void stop_alert() {
 }
 
 void analyze_direction() {
-  int lr_delay = compute_tdoa(front_left, front_right);
-  float lr_us = (float)lr_delay / SAMPLE_RATE * 1000000.0;
+  // Left-Right: average of front pair AND rear pair
+  int lr_delay_front = compute_tdoa(front_left, front_right);
+  int lr_delay_rear = compute_tdoa(rear_left, rear_right);
+  int lr_delay = (lr_delay_front + lr_delay_rear) / 2;
 
-  int fr_delay = compute_tdoa(front_left, rear_left);
-  float fr_us = (float)fr_delay / SAMPLE_RATE * 1000000.0;
+  // Front-Back: average of left side AND right side
+  int fb_delay_left = compute_tdoa(front_left, rear_left);
+  int fb_delay_right = compute_tdoa(front_right, rear_right);
+  int fb_delay = (fb_delay_left + fb_delay_right) / 2;
+
+  float lr_us = (float)lr_delay / SAMPLE_RATE * 1000000.0;
+  float fb_us = (float)fb_delay / SAMPLE_RATE * 1000000.0;
 
   const char* lr_dir;
   if (lr_delay > 3) lr_dir = "RIGHT";
@@ -219,24 +226,25 @@ void analyze_direction() {
   else lr_dir = "CENTER";
 
   const char* fr_dir;
-  if (fr_delay > 3) fr_dir = "FRONT";
-  else if (fr_delay < -3) fr_dir = "BACK";
-  else fr_dir = "MIDDLE";
+if (fb_delay > 5) fr_dir = "FRONT";
+else if (fb_delay < -5) fr_dir = "BACK";
+else fr_dir = "FRONT";  // default to FRONT (no motor) 
 
   trial_number++;
 
   Serial.println("==========================================");
   Serial.printf("  Trial #%d\n", trial_number);
   Serial.println("  ---- Left/Right ----");
-  Serial.printf("  Delay: %d samples (%.1f us)\n", lr_delay, lr_us);
+  Serial.printf("  Front pair delay: %d, Rear pair delay: %d\n", lr_delay_front, lr_delay_rear);
+  Serial.printf("  Average delay: %d samples (%.1f us)\n", lr_delay, lr_us);
   Serial.printf("  Direction: %s\n", lr_dir);
   Serial.println("  ---- Front/Back ----");
-  Serial.printf("  Delay: %d samples (%.1f us)\n", fr_delay, fr_us);
+  Serial.printf("  Left side delay: %d, Right side delay: %d\n", fb_delay_left, fb_delay_right);
+  Serial.printf("  Average delay: %d samples (%.1f us)\n", fb_delay, fb_us);
   Serial.printf("  Direction: %s\n", fr_dir);
   Serial.println("  ---- Combined ----");
   Serial.printf("  >>> %s - %s <<<\n", fr_dir, lr_dir);
 
-  // Trigger motor + LED alert
   trigger_alert(lr_dir, fr_dir);
 
   Serial.println("==========================================");
